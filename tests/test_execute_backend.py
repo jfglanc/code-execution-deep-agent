@@ -124,17 +124,19 @@ class TestLocalExecutionBackend:
         assert result.exit_code == 0
         assert "content" in result.output
 
-    def test_env_allowlist(self, temp_workspace):
-        """Test that environment variable allowlist is respected."""
-        backend = LocalExecutionBackend(
-            root_dir=temp_workspace,
-            env_allowlist={"TEST_VAR": "test_value"},
-        )
+    def test_full_environment_inheritance(self, backend):
+        """Test that subprocess inherits all environment variables from parent."""
+        # Set a test environment variable in the parent process
+        import os
+        os.environ["TEST_CUSTOM_VAR"] = "test_value_123"
         
-        # This should have access to PATH (always included)
-        result = backend.execute("echo $PATH")
+        # The subprocess should have access to it
+        result = backend.execute("echo $TEST_CUSTOM_VAR")
         assert result.exit_code == 0
-        assert len(result.output.strip()) > 0
+        assert "test_value_123" in result.output
+        
+        # Cleanup
+        del os.environ["TEST_CUSTOM_VAR"]
 
     def test_command_with_pipes(self, backend):
         """Test that shell features like pipes work correctly."""

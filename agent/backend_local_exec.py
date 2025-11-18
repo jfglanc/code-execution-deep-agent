@@ -20,10 +20,13 @@ class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
     from FilesystemBackend and adds the execute() method to run shell commands
     locally with proper safety constraints.
 
+    Subprocesses inherit the full environment from the parent process, including
+    all environment variables loaded from .env files. This allows scripts to access
+    API keys, configuration variables, and other environment-based settings.
+
     Attributes:
         default_timeout: Maximum seconds allowed for command execution (default: 120).
         max_output_chars: Maximum characters in combined output before truncation (default: 50000).
-        env_allowlist: Dictionary of environment variables allowed in execution context.
     """
 
     def __init__(
@@ -31,7 +34,6 @@ class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
         root_dir: str | Path | None = None,
         default_timeout: int = 120,
         max_output_chars: int = 50_000,
-        env_allowlist: dict[str, str] | None = None,
     ) -> None:
         """Initialize the LocalExecutionBackend.
 
@@ -40,20 +42,17 @@ class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
                      Commands will run with cwd=root_dir.
             default_timeout: Maximum execution time in seconds (default: 120).
             max_output_chars: Maximum output size before truncation (default: 50000).
-            env_allowlist: Mapping of allowed environment variables to pass to subprocesses.
-                          If None, only a minimal baseline environment is used.
         """
         super().__init__(root_dir=root_dir)
         self.default_timeout = default_timeout
         self.max_output_chars = max_output_chars
-        self.env_allowlist = env_allowlist or {}
 
     def execute(self, command: str) -> ExecuteResponse:
         """Execute a shell command in the backend's working directory.
 
         The command runs with:
         - cwd set to self.cwd (the backend's root directory)
-        - A minimal environment (only variables in env_allowlist)
+        - Full environment inheritance from parent process (includes .env variables)
         - Configured timeout to prevent hanging
         - Output capture of both stdout and stderr
 
@@ -112,23 +111,15 @@ class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
     def _build_env(self) -> dict[str, str]:
         """Build the environment dictionary for subprocess execution.
 
-        Only includes environment variables that are explicitly allowed via
-        the env_allowlist. This provides a minimal, controlled execution
-        environment for safety.
+        Returns a complete copy of the parent process's environment variables,
+        including all variables loaded from .env files. This allows subprocesses
+        to access API keys, configuration variables, and other environment-based
+        settings.
 
         Returns:
-            Dictionary of environment variables to pass to subprocess.
+            Dictionary of all environment variables from parent process.
         """
-        env = {}
-        for key in self.env_allowlist:
-            if key in os.environ:
-                env[key] = os.environ[key]
-        
-        # Always include PATH if not already in allowlist
-        if "PATH" not in env and "PATH" in os.environ:
-            env["PATH"] = os.environ["PATH"]
-        
-        return env
+        return dict(os.environ)
 
     @property
     def id(self) -> str:
