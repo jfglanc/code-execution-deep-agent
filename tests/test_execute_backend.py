@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.backend_local_exec import LocalExecutionBackend
+from agent.virtualfs import VirtualMount, VirtualPathResolver
 
 
 class TestLocalExecutionBackend:
@@ -27,12 +28,28 @@ class TestLocalExecutionBackend:
             yield Path(tmpdir)
 
     @pytest.fixture
-    def backend(self, temp_workspace):
+    def virtual_resolver(self, temp_workspace):
+        """Create a virtual path resolver for the temporary workspace."""
+        mounts = [
+            VirtualMount("/", temp_workspace),
+            VirtualMount("/data", temp_workspace / "data"),
+            VirtualMount("/scripts", temp_workspace / "scripts"),
+            VirtualMount("/results", temp_workspace / "results"),
+            VirtualMount("/skills", temp_workspace / "skills"),
+        ]
+        for mount in mounts:
+            mount.physical.mkdir(parents=True, exist_ok=True)
+        return VirtualPathResolver(mounts)
+
+    @pytest.fixture
+    def backend(self, temp_workspace, virtual_resolver):
         """Create a LocalExecutionBackend instance for testing."""
         return LocalExecutionBackend(
             root_dir=temp_workspace,
             default_timeout=5,  # Short timeout for tests
             max_output_chars=1000,  # Small limit for truncation tests
+            virtual_mode=True,
+            virtual_resolver=virtual_resolver,
         )
 
     def test_successful_command_execution(self, backend):
@@ -153,4 +170,29 @@ class TestLocalExecutionBackend:
         assert "line1" in result.output
         assert "line2" in result.output
         assert "line3" in result.output
+
+    def test_virtual_path_command_execution(self, backend, temp_workspace):
+        """Test that commands referencing virtual paths are rewritten correctly."""
+        skills_dir = temp_workspace / "skills"
+        scripts_dir = skills_dir / "csv"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+
+        script_path = scripts_dir / "hello.py"
+        script_path.write_text(
+            "import pathlib\n"
+            "import sys\n"
+            "path = pathlib.Path(sys.argv[1])\n"
+            "print(path.read_text().strip())\n"
+        )
+
+        data_dir = temp_workspace / "data"
+        data_dir.mkdir(exist_ok=True)
+        data_file = data_dir / "input.txt"
+        data_file.write_text("virtual-fs-test")
+
+        command = "python3 /skills/csv/hello.py /data/input.txt"
+        result = backend.execute(command)
+
+        assert result.exit_code == 0
+        assert "virtual-fs-test" in result.output
 

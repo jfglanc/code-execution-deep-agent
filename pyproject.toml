@@ -22,6 +22,7 @@ dependencies = [
     "pypdf>=3.0.0",
     "pyyaml>=6.0.0",
     "reportlab>=4.0.0",
+    "bashlex>=0.18",
 ]
 
 

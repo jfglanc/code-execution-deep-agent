@@ -122,6 +122,7 @@ class SkillsMiddleware(AgentMiddleware):
                 metadata = self._parse_skill_frontmatter(skill_md)
                 metadata["skill_root"] = str(skill_dir.resolve())
                 metadata["skill_md_path"] = str(skill_md.resolve())
+                metadata["virtual_skill_md_path"] = f"/skills/{skill_dir.name}/SKILL.md"
                 skills.append(metadata)
             except (ValueError, KeyError) as e:
                 # Skip invalid skills but log the error
@@ -193,9 +194,10 @@ class SkillsMiddleware(AgentMiddleware):
         # Build the skill list
         skill_items = []
         for skill in skills:
+            virtual_path = skill.get("virtual_skill_md_path", skill["skill_md_path"])
             skill_items.append(
                 f"- **{skill['name']}**: {skill['description']}\n"
-                f"  Path: `{skill['skill_md_path']}`"
+                f"  Path: `{virtual_path}`"
             )
 
         skills_list = "\n".join(skill_items)

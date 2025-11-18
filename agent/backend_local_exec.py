@@ -8,9 +8,12 @@ local command execution capabilities.
 import os
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+
+from agent.virtualfs import VirtualPathResolver
 
 
 class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -35,6 +38,7 @@ class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
         default_timeout: int = 120,
         max_output_chars: int = 50_000,
         virtual_mode: bool = False,
+        virtual_resolver: Optional[VirtualPathResolver] = None,
     ) -> None:
         """Initialize the LocalExecutionBackend.
 
@@ -49,6 +53,7 @@ class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
         super().__init__(root_dir=root_dir, virtual_mode=virtual_mode)
         self.default_timeout = default_timeout
         self.max_output_chars = max_output_chars
+        self.virtual_resolver = virtual_resolver
 
     def execute(self, command: str) -> ExecuteResponse:
         """Execute a shell command in the backend's working directory.
@@ -68,6 +73,9 @@ class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
                 - exit_code: Process exit code (124 indicates timeout)
                 - truncated: True if output was truncated
         """
+        if self.virtual_mode and self.virtual_resolver:
+            command = self.virtual_resolver.rewrite_command(command)
+
         try:
             proc = subprocess.run(
                 command,

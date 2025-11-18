@@ -26,6 +26,6 @@ agent = create_deep_agent(
     system_prompt=SYSTEM_PROMPT,
     backend=backend,
     middleware=[skills_middleware],
-    interrupt_on=INTERRUPT_ON,
+    #interrupt_on=INTERRUPT_ON,
 )
 
