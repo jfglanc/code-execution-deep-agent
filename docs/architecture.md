@@ -1,15 +1,16 @@
-# Technical Architecture & Requirements: Local Code-Execution Agent
+# Technical Architecture: Code Execution Deep Agent
 
-This document outlines the technical requirements, architectural design, and implementation strategy for building a **Local Code-Executing Deep Agent**. The goal is to build an agent with a "full computer" context (storage + execution) that uses **Progressive Disclosure** to manage complex skills without context bloat.
+This document outlines the technical architecture and implementation details for the **Code Execution Deep Agent**. The goal is to build an agent with a "full computer" context (storage + execution) that uses **Progressive Disclosure** to manage complex skills without context bloat, and **Docker-based execution** to provide a consistent, isolated environment.
 
 ## 1. Project Overview
 
-We are building a supervisor agent that runs locally on the user's machine. It does **not** use Docker or MCP. Instead, it relies on standard Python libraries and the `deepagents` framework to execute code safely on the host OS while managing capabilities via a file-based "Skills" system.
+We are building a deep agent that executes code in an isolated Docker container while managing file operations on the host. It uses the `deepagents` framework with custom backends and middleware to provide a seamless agent experience with consistent filesystem paths.
 
 ### Core Objectives
-1.  **Local Execution**: Implement a backend that allows the agent to run shell commands on the host.
+1.  **Docker-Based Execution**: Implement a backend that runs shell commands inside a Docker container with consistent filesystem paths.
 2.  **Progressive Disclosure**: Inject high-level skill metadata into the system prompt, allowing the agent to "pull" detailed instructions (`SKILL.md`) and tools (`scripts/`) only when needed.
 3.  **Educational Architecture**: Demonstrate clear separation between **Middleware** (Prompt/Tool injection), **Backends** (I/O & Execution), and **Agent Graph** (Logic).
+4.  **Filesystem Consistency**: Ensure paths like `/data`, `/scripts`, `/results` work identically in both file operations and executed commands.
 
 ---
 
@@ -26,43 +27,63 @@ We are building on top of the `deepagents` library. We will leverage its specifi
 
 ---
 
-## 3. New Components to Implement
+## 3. Implemented Components
 
-### A. `LocalExecutionBackend`
-**Role**: The interface between the Agent and the OS. It handles both File I/O and Command Execution.
+### A. `DockerExecutionBackend` (`libs/backends/docker/backend.py`)
+**Role**: The interface between the Agent and the Docker container. It handles file I/O on the host and command execution inside the container.
+
+**Location**: `libs/backends/docker/backend.py`
 
 **Inheritance**:
 ```python
-class LocalExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
+class DockerExecutionBackend(FilesystemBackend, SandboxBackendProtocol):
 ```
-*   Inherits from `FilesystemBackend` to get `read`, `write`, `ls_info` implementation for free.
-*   Implements `SandboxBackendProtocol` to provide the `execute` method.
+*   Inherits from `FilesystemBackend` to get `read`, `write`, `ls_info` implementation for free (operates on host filesystem).
+*   Implements `SandboxBackendProtocol` to provide the `execute` method (runs in Docker container).
 
-**Requirements**:
+**Implementation Details**:
 1.  **`execute(command: str) -> ExecuteResponse`**:
-    *   Uses `subprocess.run` with `shell=True`.
-    *   **Context**: MUST run in `self.cwd`.
+    *   Uses Docker Python SDK (`docker.from_env()`) to connect to a running container.
+    *   Executes commands via `container.exec_run()` with `workdir="/workspace"`.
+    *   **Environment**: Inherits full environment from parent process (including `.env` variables).
     *   **Output**: Combines `stdout` and `stderr`.
-    *   **Safety**: Implements strict timeouts (exit code 124 on timeout) and output truncation (max chars) to prevent context context overflow.
-2.  **`id` property**: Returns a stable identifier for the backend instance.
+    *   **Safety**: Implements output truncation (max chars) to prevent context overflow.
+2.  **`id` property**: Returns `"docker-exec-{container_name}"`.
 
-### B. `SkillsMiddleware`
+**Docker Container** (`libs/backends/docker/Dockerfile`):
+*   **Base Image**: `python:3.11-slim`
+*   **Pre-installed Packages**: pandas, numpy, matplotlib, seaborn, scipy, requests, pypdf, reportlab, pyyaml
+*   **Filesystem Structure**:
+    *   `/workspace` - mounted from host (`workspace/` directory)
+    *   `/data` → symlink to `/workspace/data`
+    *   `/scripts` → symlink to `/workspace/scripts`
+    *   `/results` → symlink to `/workspace/results`
+    *   `/skills` - static copy from build time
+*   **Volume Mount**: Host `workspace/` is mounted to container `/workspace` for real-time bidirectional sync.
+
+### B. `SkillsMiddleware` (`libs/middleware/skills.py`)
 **Role**: Implements the **Progressive Disclosure** pattern.
+
+**Location**: `libs/middleware/skills.py`
 
 **Inheritance**:
 ```python
 class SkillsMiddleware(AgentMiddleware):
 ```
 
-**Requirements**:
-1.  **Initialization**: Accepts a path to the `skills/` directory.
-2.  **`before_agent`**:
+**Implementation Details**:
+1.  **Initialization**: 
+    *   Accepts a path to the `skills/` directory.
+    *   Performs **eager skill discovery** at import time (not during agent execution).
+    *   Can accept pre-discovered skills to avoid redundant filesystem scans.
+2.  **Skill Discovery** (`_discover_skills`):
     *   Scans `skills/*/SKILL.md`.
     *   Parses YAML Frontmatter (Name, Description).
-    *   Stores this metadata in `AgentState`.
-3.  **`wrap_model_call`**:
+    *   Stores metadata including virtual paths (e.g., `/skills/csv-analytics/SKILL.md`).
+3.  **`wrap_model_call` / `awrap_model_call`**:
     *   Injects a section into the System Prompt listing available skills.
     *   *Crucial*: Does NOT inject the full skill content. It instructs the agent to use `read_file` to load the specific `SKILL.md` if the description matches the user's request.
+    *   Provides example workflow and usage guidelines.
 
 ---
 
@@ -87,7 +108,7 @@ skills/
 4.  **Execution**: LLM reads instructions, sees it needs to run a script, and calls `execute("python3 /skills/pdf-processing/scripts/extract_forms.py ...")`.
 
 ### Backend Protocol Adherence
-Our `LocalExecutionBackend` must satisfy `deepagents.backends.protocol.SandboxBackendProtocol`:
+Our `DockerExecutionBackend` satisfies `deepagents.backends.protocol.SandboxBackendProtocol`:
 
 ```python
 @runtime_checkable
@@ -97,41 +118,106 @@ class SandboxBackendProtocol(BackendProtocol, Protocol):
     def id(self) -> str: ...
 ```
 
+### Backend Composition
+The agent uses `CompositeBackend` to route operations:
+```python
+backend = CompositeBackend(
+    default=DockerExecutionBackend(root_dir=WORKSPACE_DIR, ...),
+    routes={"/skills/": FilesystemBackend(root_dir=SKILLS_DIR, virtual_mode=True)}
+)
+```
+*   **Default route** (`DockerExecutionBackend`): Handles workspace files and executes commands in Docker.
+*   **`/skills/` route** (`FilesystemBackend`): Read-only access to skills on host.
+
 ---
 
 ## 5. Safety & Configuration
 
-Since we are allowing local execution, we must configure the agent with Human-in-the-Loop (HITL) safety rails using `deepagents` configuration patterns.
+The agent is configured with Human-in-the-Loop (HITL) safety rails using `deepagents` configuration patterns.
 
-**`interrupt_on` Configuration**:
-We will configure the `create_deep_agent` call to require approval for high-risk tools:
+**`interrupt_on` Configuration** (`agent/config.py`):
+The agent requires user approval for high-risk operations:
 ```python
-interrupt_on={
+INTERRUPT_ON = {
     "execute": {"allowed_decisions": ["approve", "reject"]},
     "edit_file": {"allowed_decisions": ["approve", "reject"]},
-    # "write_file" - optional
 }
 ```
 
+**Docker Isolation Benefits**:
+*   Commands execute in an isolated container, not directly on the host OS.
+*   Pre-defined environment with only necessary packages installed.
+*   `/workspace` volume mount limits container's write access to a specific directory.
+*   Container can be easily reset or rebuilt if compromised.
+
 ---
 
-## 6. Development Roadmap
+## 6. Project Structure
 
-1.  **Week 1: The Backend**
-    *   Implement `LocalExecutionBackend`.
-    *   Unit tests ensuring `execute` handles timeouts, cwd, and output capture correctly.
-2.  **Week 2: The Middleware**
-    *   Implement `SkillsMiddleware`.
-    *   Implement metadata scanning and prompt injection.
-    *   Create the `csv-analytics` and `pdf-processing` example skills.
-3.  **Week 3: Integration & Demo**
-    *   Wire it all together using `create_deep_agent`.
-    *   Mount the backend using `CompositeBackend` (Workspace RW / Skills RO).
-    *   Verify the full "Prompt -> Read Skill -> Execute Script" loop.
+```
+code-execution-deep-agent/
+├── libs/                           # Reusable libraries
+│   ├── backends/
+│   │   └── docker/
+│   │       ├── backend.py          # DockerExecutionBackend implementation
+│   │       ├── Dockerfile          # Container definition
+│   │       └── README.md           # Docker backend documentation
+│   └── middleware/
+│       └── skills.py               # SkillsMiddleware implementation
+├── agent/                          # Agent configuration and entry point
+│   ├── config.py                   # Configuration (backends, model, middleware)
+│   ├── prompt.py                   # System prompt
+│   └── graph.py                    # Agent graph instantiation
+├── skills/                         # Skill definitions (read-only)
+│   ├── csv-analytics/
+│   │   ├── SKILL.md
+│   │   ├── scripts/
+│   │   └── docs/
+│   └── pdf-processing/
+│       ├── SKILL.md
+│       ├── scripts/
+│       └── docs/
+├── workspace/                      # Agent workspace (mounted into Docker)
+│   ├── data/                       # Input data
+│   ├── scripts/                    # Agent-generated scripts
+│   └── results/                    # Output files
+├── tests/                          # Unit and integration tests
+├── docs/                           # Documentation
+│   ├── architecture.md             # This file
+│   └── docker-setup.md             # Docker setup guide
+└── langgraph.json                  # LangGraph configuration
 
-## 7. Why This Architecture?
+```
 
-*   **vs. Docker**: Docker requires heavy setup and privileges. This approach runs where the user is, making it strictly a "user agent" acting with the user's permissions.
-*   **vs. MCP**: MCP abstracts tools behind a server. Here, we want the agent to "own" the tools as files, allowing it to read, understand, and even *edit* its own scripts if permitted (self-evolution).
-*   **Progressive Disclosure**: Prevents the context window from filling up with tool definitions for 50 skills when only 1 is needed.
+## 7. Implementation Status
+
+✅ **Completed**:
+*   `DockerExecutionBackend` with full Docker integration
+*   `SkillsMiddleware` with eager skill discovery
+*   Docker container with pre-installed packages and symlink structure
+*   `CompositeBackend` routing for workspace and skills
+*   HITL approval for `execute` and `edit_file` operations
+*   Example skills: `csv-analytics` and `pdf-processing`
+*   Comprehensive test suite
+*   Complete documentation (README, docker-setup, architecture)
+
+## 8. Why This Architecture?
+
+**Docker-Based Execution**:
+*   **Consistent Paths**: `/data`, `/scripts`, `/results` work identically in file operations and executed commands.
+*   **Isolation**: Commands run in a sandboxed environment, not directly on host.
+*   **Reproducibility**: Pre-installed packages ensure consistent execution environment.
+*   **Portability**: Same experience across macOS, Linux, and Windows.
+
+**vs. MCP**:
+*   MCP abstracts tools behind a server. Here, we want the agent to "own" the tools as files, allowing it to read, understand, and even *edit* its own scripts if permitted (self-evolution).
+
+**Progressive Disclosure**:
+*   Prevents the context window from filling up with tool definitions for 50 skills when only 1 is needed.
+*   Agent loads skill details on-demand via `read_file`, keeping token usage low.
+
+**Modular Design**:
+*   Clear separation: `libs/` (reusable), `agent/` (configuration), `skills/` (capabilities).
+*   Easy to extend with new backends or middleware.
+*   Feature-based organization for scalability.
 

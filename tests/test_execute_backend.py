@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from agent.backend_docker import DockerExecutionBackend
+from libs.backends import DockerExecutionBackend
 
 
 class TestDockerExecutionBackend:

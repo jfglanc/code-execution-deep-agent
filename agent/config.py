@@ -12,8 +12,8 @@ from langchain_anthropic import ChatAnthropic
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
 
-from agent.backend_docker import DockerExecutionBackend
-from agent.middleware_skills import SkillsMiddleware
+from libs.backends import DockerExecutionBackend
+from libs.middleware import SkillsMiddleware
 from agent.prompt import SYSTEM_PROMPT
 
 # Load environment variables

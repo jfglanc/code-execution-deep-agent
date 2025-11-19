@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from agent.middleware_skills import SkillsMiddleware
+from libs.middleware import SkillsMiddleware
 
 
 class TestSkillsMiddleware:

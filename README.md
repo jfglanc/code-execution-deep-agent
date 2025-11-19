@@ -31,22 +31,36 @@ This project demonstrates:
 
 ### Installation
 
-1. **Clone the repository**:
+1. **Install uv** (if you haven't already):
+
+```bash
+# macOS/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+2. **Clone the repository**:
 
 ```bash
 git clone https://github.com/jfglanc/code-execution-deep-agent.git
 cd code-execution-deep-agent
 ```
 
-2. **Install dependencies**:
+3. **Install dependencies**:
 
 ```bash
-uv sync
+uv sync --dev
 ```
 
-This creates a virtual environment in `.venv/` and installs all dependencies.
+This automatically:
+- Creates a virtual environment in `.venv/`
+- Installs the project in editable mode
+- Installs all dependencies including LangGraph CLI
+- Generates `uv.lock` for reproducible builds
 
-3. **Set up your API key**:
+4. **Set up your API key**:
 
 ```bash
 cp .env.example .env
@@ -56,17 +70,20 @@ Then edit `.env` and add your Anthropic API key:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Optional: Enable LangSmith tracing
+LANGSMITH_API_KEY=lsv2...
 ```
 
-4. **Build the Docker image**:
+5. **Build the Docker image**:
 
 ```bash
-docker build -t code-execution-agent:latest .
+docker build -f libs/backends/docker/Dockerfile -t code-execution-agent:latest .
 ```
 
 This creates a container image with Python 3.11 and pre-installed data science packages (pandas, numpy, matplotlib, etc.).
 
-5. **Start the execution container**:
+6. **Start the execution container**:
 
 ```bash
 docker run -d --name code-execution-agent -v "$(pwd)/workspace:/workspace" code-execution-agent:latest
@@ -79,7 +96,7 @@ docker run -d --name code-execution-agent -v "${PWD}/workspace:/workspace" code-
 
 **Note**: The container must be running for the agent to execute commands. See `docs/docker-setup.md` for troubleshooting and management.
 
-6. **Generate sample data** (optional, for demos):
+7. **Generate sample data** (optional, for demos):
 
 ```bash
 uv run python workspace/data/generate_sample_data.py
@@ -89,17 +106,20 @@ This creates:
 - `workspace/data/orders.csv` - 10,000 sample order records
 - `workspace/data/sample_form.pdf` - PDF with fillable form fields
 
-7. **Run the agent**:
+8. **Start the LangGraph server**:
 
 ```bash
-uv run python -m agent.graph
+uv run langgraph dev
 ```
 
-Or:
+This starts the agent server with:
+- Development UI at http://localhost:8123
+- API server for agent interactions
+- Hot reload on code changes
 
-```bash
-uv run python agent/graph.py
-```
+9. **Open the UI and start chatting**:
+
+Navigate to **http://localhost:8123** in your browser to interact with the agent.
 
 ## Usage Examples
 
@@ -136,9 +156,16 @@ The agent can also handle general questions without using skills:
 ## Project Structure
 
 ```
+libs/
+├── backends/
+│   └── docker/
+│       ├── backend.py       # DockerExecutionBackend implementation
+│       ├── Dockerfile       # Container definition
+│       └── README.md        # Docker backend documentation
+└── middleware/
+    └── skills.py            # SkillsMiddleware implementation
+
 agent/
-├── backend_local_exec.py    # LocalExecutionBackend implementation
-├── middleware_skills.py     # SkillsMiddleware implementation
 ├── config.py                # Configuration and setup
 ├── prompt.py                # System prompt
 └── graph.py                 # Agent graph and main entry point
@@ -157,7 +184,7 @@ workspace/
 └── data/                   # Sample and working data files
 
 tests/
-├── test_execute_backend.py      # Unit tests for LocalExecutionBackend
+├── test_execute_backend.py      # Unit tests for DockerExecutionBackend
 ├── test_skills_middleware.py    # Unit tests for SkillsMiddleware
 ├── test_e2e_csv_flow.py         # End-to-end CSV workflow tests
 └── test_e2e_pdf_flow.py         # End-to-end PDF workflow tests
@@ -177,11 +204,12 @@ Instead of loading all skill documentation into the agent's context at startup, 
 ### Backend Architecture
 
 The agent uses a `CompositeBackend`:
-- **Default**: `LocalExecutionBackend` (workspace/) - read-write + execute
-- **Route `/skills/`**: `FilesystemBackend` (skills/) - read-only
+- **Default**: `DockerExecutionBackend` (workspace/) - read-write + execute in container
+- **Route `/skills/`**: `FilesystemBackend` (skills/) - read-only on host
 
 This separation ensures:
 - Skills are protected from accidental modification
+- Commands execute in isolated Docker environment
 - Workspace is fully accessible for data processing
 - Clear distinction between capabilities and working data
 
